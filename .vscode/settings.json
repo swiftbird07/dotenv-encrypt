@@ -1,0 +1,6 @@
+{
+  "python.analysis.typeCheckingMode": "strict",
+  "python.analysis.diagnosticMode": "workspace",
+  "python.analysis.include": ["src", "tests"],
+  "python.analysis.exclude": [".venv", "build", "dist"]
+}

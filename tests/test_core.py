@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from pytest import CaptureFixture, MonkeyPatch
 
 from dotenv_encrypt import (
     PASSPHRASE_ENV,
@@ -25,7 +27,7 @@ PASSPHRASE = "correct horse battery staple"  # noqa: S105
 LEGACY_SALT = b"C9A73747FDAC9945E2ADC3"
 
 
-def test_encrypted_env_roundtrip_does_not_store_plaintext(tmp_path):
+def test_encrypted_env_roundtrip_does_not_store_plaintext(tmp_path: Path) -> None:
     path = tmp_path / ".env.enc"
     env = {
         "API_KEY": "super-secret",
@@ -41,7 +43,7 @@ def test_encrypted_env_roundtrip_does_not_store_plaintext(tmp_path):
     assert read_encrypted_env(path, PASSPHRASE) == env
 
 
-def test_wrong_passphrase_fails_authentication(tmp_path):
+def test_wrong_passphrase_fails_authentication(tmp_path: Path) -> None:
     path = tmp_path / ".env.enc"
     write_encrypted_env({"TOKEN": "abc"}, path, PASSPHRASE, kdf_params=FAST_KDF)
 
@@ -49,7 +51,7 @@ def test_wrong_passphrase_fails_authentication(tmp_path):
         read_encrypted_env(path, "wrong passphrase")
 
 
-def test_tampered_ciphertext_fails_authentication(tmp_path):
+def test_tampered_ciphertext_fails_authentication(tmp_path: Path) -> None:
     path = tmp_path / ".env.enc"
     write_encrypted_env({"TOKEN": "abc"}, path, PASSPHRASE, kdf_params=FAST_KDF)
 
@@ -61,7 +63,7 @@ def test_tampered_ciphertext_fails_authentication(tmp_path):
         read_encrypted_env(path, PASSPHRASE)
 
 
-def test_tampered_authenticated_header_fails_authentication():
+def test_tampered_authenticated_header_fails_authentication() -> None:
     encrypted = bytearray(
         encrypt_bytes(b"TOKEN=abc\n", PASSPHRASE, kdf_params=FAST_KDF)
     )
@@ -78,7 +80,7 @@ def test_tampered_authenticated_header_fails_authentication():
         decrypt_bytes(bytes(encrypted), PASSPHRASE)
 
 
-def test_load_and_unload_respect_override_flag(tmp_path):
+def test_load_and_unload_respect_override_flag(tmp_path: Path) -> None:
     path = tmp_path / ".env.enc"
     write_encrypted_env(
         {"EXISTING": "new", "ADDED": "value"},
@@ -98,17 +100,17 @@ def test_load_and_unload_respect_override_flag(tmp_path):
     assert environ == {"EXISTING": "old"}
 
 
-def test_render_env_rejects_invalid_names():
+def test_render_env_rejects_invalid_names() -> None:
     with pytest.raises(ValueError):
         render_env({"1BAD": "value"})
 
 
-def test_kdf_parameters_are_bounded():
+def test_kdf_parameters_are_bounded() -> None:
     with pytest.raises(ValueError, match="no greater"):
         ScryptParams(n=2**21).validate()
 
 
-def test_file_permissions_are_private_on_posix(tmp_path):
+def test_file_permissions_are_private_on_posix(tmp_path: Path) -> None:
     path = tmp_path / ".env.enc"
     write_encrypted_env({"TOKEN": "abc"}, path, PASSPHRASE, kdf_params=FAST_KDF)
 
@@ -116,7 +118,7 @@ def test_file_permissions_are_private_on_posix(tmp_path):
         assert path.stat().st_mode & 0o777 == 0o600
 
 
-def test_legacy_original_script_format_can_be_read(tmp_path):
+def test_legacy_original_script_format_can_be_read(tmp_path: Path) -> None:
     key = hashlib.scrypt(
         PASSPHRASE.encode("utf-8"),
         salt=LEGACY_SALT,
@@ -133,7 +135,11 @@ def test_legacy_original_script_format_can_be_read(tmp_path):
     assert read_encrypted_env(path, PASSPHRASE) == {"LEGACY": "yes"}
 
 
-def test_cli_encrypt_show_set_and_unset(tmp_path, monkeypatch, capsys):
+def test_cli_encrypt_show_set_and_unset(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
     plaintext = tmp_path / ".env"
     encrypted = tmp_path / ".env.enc"
     plaintext.write_text("ALPHA=one\n", encoding="utf-8")

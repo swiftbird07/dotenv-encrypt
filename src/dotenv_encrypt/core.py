@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from getpass import getpass
 from io import StringIO
 from pathlib import Path
-from typing import Any, Final
+from typing import Final, cast
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -83,14 +83,14 @@ class ScryptParams:
         return {"n": self.n, "r": self.r, "p": self.p, "dklen": self.dklen}
 
     @classmethod
-    def from_header(cls, data: Mapping[str, Any]) -> ScryptParams:
+    def from_header(cls, data: Mapping[str, object]) -> ScryptParams:
         """Load KDF parameters from encrypted file metadata."""
         try:
             params = cls(
-                n=int(data["n"]),
-                r=int(data["r"]),
-                p=int(data["p"]),
-                dklen=int(data["dklen"]),
+                n=_expect_int(data["n"], "n"),
+                r=_expect_int(data["r"], "r"),
+                p=_expect_int(data["p"], "p"),
+                dklen=_expect_int(data["dklen"], "dklen"),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise InvalidEncryptedFile("Invalid scrypt parameters.") from exc
@@ -127,8 +127,6 @@ def encrypt_bytes(
     The output format stores a random salt and KDF parameters in authenticated
     metadata, followed by a random 96-bit nonce and ciphertext.
     """
-    if not isinstance(plaintext, bytes):
-        raise TypeError("plaintext must be bytes.")
     _validate_passphrase(passphrase)
 
     salt = os.urandom(_SALT_SIZE)
@@ -146,8 +144,6 @@ def decrypt_bytes(blob: bytes, passphrase: str) -> bytes:
     Files created by the original one-off script are also accepted as a legacy
     format: ``nonce || ciphertext || tag`` with its static scrypt salt.
     """
-    if not isinstance(blob, bytes):
-        raise TypeError("blob must be bytes.")
     _validate_passphrase(passphrase)
 
     if blob.startswith(_MAGIC):
@@ -275,7 +271,7 @@ def unload_enc_env(*, environ: MutableMapping[str, str] | None = None) -> None:
 def render_env(env: Mapping[str, str]) -> str:
     """Serialize a mapping in dotenv syntax with safely escaped values."""
     _validate_env_mapping(env)
-    lines = []
+    lines: list[str] = []
     for key, value in env.items():
         escaped = (
             value.replace("\\", "\\\\")
@@ -338,7 +334,7 @@ def _decrypt_legacy_format(blob: bytes, passphrase: str) -> bytes:
     )
 
 
-def _make_header(salt: bytes, params: ScryptParams) -> dict[str, Any]:
+def _make_header(salt: bytes, params: ScryptParams) -> dict[str, object]:
     return {
         "version": 1,
         "cipher": "AES-256-GCM",
@@ -348,7 +344,7 @@ def _make_header(salt: bytes, params: ScryptParams) -> dict[str, Any]:
     }
 
 
-def _encode_header(header: Mapping[str, Any]) -> bytes:
+def _encode_header(header: Mapping[str, object]) -> bytes:
     header_bytes = json.dumps(
         header,
         sort_keys=True,
@@ -359,7 +355,7 @@ def _encode_header(header: Mapping[str, Any]) -> bytes:
     return _MAGIC + struct.pack(">H", len(header_bytes)) + header_bytes
 
 
-def _decode_header(blob: bytes) -> tuple[dict[str, Any], int]:
+def _decode_header(blob: bytes) -> tuple[dict[str, object], int]:
     if len(blob) < len(_MAGIC) + _HEADER_LEN:
         raise InvalidEncryptedFile("Encrypted file is too short.")
     if not blob.startswith(_MAGIC):
@@ -374,13 +370,14 @@ def _decode_header(blob: bytes) -> tuple[dict[str, Any], int]:
         raise InvalidEncryptedFile("Encrypted file is truncated.")
 
     try:
-        header = json.loads(blob[header_start:header_end].decode("utf-8"))
+        raw_header = json.loads(blob[header_start:header_end].decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise InvalidEncryptedFile(
             "Encrypted file metadata is not valid JSON."
         ) from exc
-    if not isinstance(header, dict):
+    if not isinstance(raw_header, dict):
         raise InvalidEncryptedFile("Encrypted file metadata must be an object.")
+    header = cast(dict[str, object], raw_header)
     if header.get("version") != 1:
         raise InvalidEncryptedFile("Unsupported encrypted file version.")
     if header.get("cipher") != "AES-256-GCM" or header.get("kdf") != "scrypt":
@@ -410,11 +407,9 @@ def _parse_env(text: str) -> dict[str, str]:
 
 
 def _validate_env_mapping(env: Mapping[str, str]) -> None:
-    for key, value in env.items():
-        if not isinstance(key, str) or not _ENV_NAME.fullmatch(key):
+    for key in env:
+        if not _ENV_NAME.fullmatch(key):
             raise ValueError(f"Invalid environment variable name: {key!r}")
-        if not isinstance(value, str):
-            raise TypeError(f"Environment variable {key!r} must be a string.")
 
 
 def _resolve_passphrase(
@@ -447,8 +442,6 @@ def _prompt_passphrase(*, confirm: bool) -> str:
 
 
 def _validate_passphrase(passphrase: str) -> None:
-    if not isinstance(passphrase, str):
-        raise TypeError("passphrase must be a string.")
     if not passphrase:
         raise ValueError("Passphrase cannot be empty.")
 
@@ -473,7 +466,7 @@ def _urlsafe_b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("ascii")
 
 
-def _decode_b64(value: Any, name: str) -> bytes:
+def _decode_b64(value: object, name: str) -> bytes:
     if not isinstance(value, str):
         raise InvalidEncryptedFile(f"Missing encrypted file {name}.")
     try:
@@ -482,9 +475,15 @@ def _decode_b64(value: Any, name: str) -> bytes:
         raise InvalidEncryptedFile(f"Invalid encrypted file {name}.") from exc
 
 
-def _expect_mapping(value: Any, name: str) -> Mapping[str, Any]:
+def _expect_mapping(value: object, name: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise InvalidEncryptedFile(f"Missing encrypted file {name}.")
+    return cast(Mapping[str, object], value)
+
+
+def _expect_int(value: object, name: str) -> int:
+    if not isinstance(value, int):
+        raise InvalidEncryptedFile(f"Invalid integer field in encrypted file: {name}.")
     return value
 
 

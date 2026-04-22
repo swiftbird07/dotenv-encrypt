@@ -33,6 +33,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "build>=1.2",
+    "pyright>=1.1.390",
     "pytest>=8",
     "ruff>=0.5",
     "twine>=5",
