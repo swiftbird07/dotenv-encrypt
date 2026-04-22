@@ -2,7 +2,6 @@
 
 from .core import (
     DEFAULT_SCRYPT_PARAMS,
-    LEGACY_PASSPHRASE_ENV,
     PASSPHRASE_ENV,
     DecryptionError,
     DotenvEncryptError,
@@ -24,7 +23,6 @@ from .core import (
 
 __all__ = [
     "DEFAULT_SCRYPT_PARAMS",
-    "LEGACY_PASSPHRASE_ENV",
     "PASSPHRASE_ENV",
     "DecryptionError",
     "DotenvEncryptError",

@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import hashlib
 import os
 from pathlib import Path
 
 import pytest
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from dotenv_encrypt import (
     DecryptionError,
@@ -21,7 +19,6 @@ from dotenv_encrypt import (
 
 FAST_KDF = ScryptParams(n=2**10, r=8, p=1)
 PASSPHRASE = "correct horse battery staple"  # noqa: S105
-LEGACY_SALT = b"C9A73747FDAC9945E2ADC3"
 
 
 def test_encrypted_env_roundtrip_does_not_store_plaintext(tmp_path: Path) -> None:
@@ -85,16 +82,16 @@ def test_load_and_unload_respect_override_flag(tmp_path: Path) -> None:
         PASSPHRASE,
         kdf_params=FAST_KDF,
     )
-    environ = {"EXISTING": "old"}
+    environ = {"EXISTING": "kept"}
 
     loaded = load_enc_env(path, PASSPHRASE, environ=environ, override=False)
 
     assert loaded == {"EXISTING": "new", "ADDED": "value"}
-    assert environ == {"EXISTING": "old", "ADDED": "value"}
+    assert environ == {"EXISTING": "kept", "ADDED": "value"}
 
     unload_enc_env(environ=environ)
 
-    assert environ == {"EXISTING": "old"}
+    assert environ == {"EXISTING": "kept"}
 
 
 def test_render_env_rejects_invalid_names() -> None:
@@ -113,20 +110,3 @@ def test_file_permissions_are_private_on_posix(tmp_path: Path) -> None:
 
     if os.name == "posix":
         assert path.stat().st_mode & 0o777 == 0o600
-
-
-def test_legacy_original_script_format_can_be_read(tmp_path: Path) -> None:
-    key = hashlib.scrypt(
-        PASSPHRASE.encode("utf-8"),
-        salt=LEGACY_SALT,
-        n=2**14,
-        r=8,
-        p=1,
-        dklen=32,
-    )
-    nonce = b"1" * 12
-    ciphertext = AESGCM(key).encrypt(nonce, b"LEGACY=yes\n", None)
-    path = tmp_path / ".env.enc"
-    path.write_bytes(nonce + ciphertext)
-
-    assert read_encrypted_env(path, PASSPHRASE) == {"LEGACY": "yes"}

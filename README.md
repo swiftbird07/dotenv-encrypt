@@ -78,8 +78,6 @@ dotenv-encrypt decrypt .env.enc -o .env.local
   POSIX modes.
 - Secret values are not printed by default. `show --values` should be used only
   when plaintext output is required.
-- The original script format is supported for decryption so existing
-  `nonce || ciphertext || tag` files can be migrated.
 
 ## Threat Model
 

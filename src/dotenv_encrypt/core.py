@@ -33,16 +33,11 @@ from dotenv import dotenv_values
 
 PASSPHRASE_ENV: Final = "DOTENV_ENCRYPT_KEY"  # noqa: S105
 """Environment variable read for non-interactive passphrases."""
-
-LEGACY_PASSPHRASE_ENV: Final = "ENC_DOTENV_KEY"  # noqa: S105
-"""Legacy environment variable used by the original script."""
-
 _MAGIC: Final = b"DENVENC1"
 _HEADER_LEN: Final = 2
 _NONCE_SIZE: Final = 12
 _SALT_SIZE: Final = 16
 _AES_GCM_TAG_SIZE: Final = 16
-_LEGACY_PASSPHRASE_SALT: Final = b"C9A73747FDAC9945E2ADC3"
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # KDF parameters are read from the encrypted file header before authentication
@@ -181,19 +176,13 @@ def encrypt_bytes(
 
 
 def decrypt_bytes(blob: bytes, passphrase: str) -> bytes:
-    """Decrypt bytes produced by :func:`encrypt_bytes`.
-
-    Files created by the original one-off script are also accepted as a legacy
-    format: ``nonce || ciphertext || tag`` with its static scrypt salt.
-    """
+    """Decrypt bytes produced by :func:`encrypt_bytes`."""
     _validate_passphrase(passphrase)
 
     if blob.startswith(_MAGIC):
         return _decrypt_current_format(blob, passphrase)
 
-    # Absence of the magic prefix is treated as the original script's format for
-    # backward-compatible reads. New writes always use the versioned format.
-    return _decrypt_legacy_format(blob, passphrase)
+    raise InvalidEncryptedFile("Unsupported encrypted file format.")
 
 
 def encrypt_text(
@@ -308,8 +297,7 @@ def load_enc_env(
     Passphrase resolution is intentionally ordered for safer local use:
 
     1. an explicit ``passphrase`` argument, when provided;
-    2. ``DOTENV_ENCRYPT_KEY`` or the legacy ``ENC_DOTENV_KEY`` environment
-       variable, when set;
+    2. ``DOTENV_ENCRYPT_KEY``, when set;
     3. an interactive ``getpass`` prompt.
 
     ``override`` controls collision handling. When ``True`` (the default),
@@ -432,35 +420,6 @@ def _decrypt_current_format(blob: bytes, passphrase: str) -> bytes:
         ) from exc
 
 
-def _decrypt_legacy_format(blob: bytes, passphrase: str) -> bytes:
-    """Decrypt the original script's nonce-plus-ciphertext format.
-
-    Legacy files did not include a magic prefix, a random salt, or authenticated
-    metadata. Support is read-only so old files can be migrated by reading and
-    writing them again with the current format.
-    """
-    if len(blob) < _NONCE_SIZE + _AES_GCM_TAG_SIZE:
-        raise InvalidEncryptedFile("Encrypted file is too short.")
-
-    nonce = blob[:_NONCE_SIZE]
-    ciphertext = blob[_NONCE_SIZE:]
-    keys = [_derive_key(passphrase, _LEGACY_PASSPHRASE_SALT, DEFAULT_SCRYPT_PARAMS)]
-    direct_key = _maybe_urlsafe_b64_key(passphrase)
-    if direct_key is not None:
-        # Some legacy users may have cached the already-derived base64 key from
-        # ENC_DOTENV_KEY. Accept it for reads, but never write this format.
-        keys.append(direct_key)
-
-    for key in keys:
-        try:
-            return AESGCM(key).decrypt(nonce, ciphertext, None)
-        except InvalidTag:
-            continue
-    raise DecryptionError(
-        "Decryption failed: wrong passphrase or file has been tampered with."
-    )
-
-
 def _make_header(salt: bytes, params: ScryptParams) -> dict[str, object]:
     """Build non-secret metadata for the versioned encrypted file header."""
     return {
@@ -557,9 +516,7 @@ def _resolve_passphrase(
 ) -> str:
     """Return an explicit, environment, or prompted passphrase."""
     if passphrase is None:
-        passphrase = os.environ.get(PASSPHRASE_ENV) or os.environ.get(
-            LEGACY_PASSPHRASE_ENV
-        )
+        passphrase = os.environ.get(PASSPHRASE_ENV)
     if passphrase is None and prompt:
         passphrase = _prompt_passphrase(confirm=confirm)
     if passphrase is None:
@@ -633,11 +590,3 @@ def _expect_int(value: object, name: str) -> int:
         raise InvalidEncryptedFile(f"Invalid integer field in encrypted file: {name}.")
     return value
 
-
-def _maybe_urlsafe_b64_key(value: str) -> bytes | None:
-    """Return a 32-byte decoded key when a legacy direct key was supplied."""
-    try:
-        decoded = base64.urlsafe_b64decode(value.encode("ascii"))
-    except (ValueError, UnicodeEncodeError):
-        return None
-    return decoded if len(decoded) == 32 else None
