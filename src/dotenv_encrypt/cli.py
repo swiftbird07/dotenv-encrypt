@@ -52,7 +52,7 @@ def _build_parser() -> argparse.ArgumentParser:
     encrypt.add_argument(
         "--delete-plaintext",
         action="store_true",
-        help="delete the plaintext source after successful encryption",
+        help="unlink the plaintext source after successful encryption",
     )
     encrypt.set_defaults(func=_cmd_encrypt)
 
@@ -88,7 +88,7 @@ def _build_parser() -> argparse.ArgumentParser:
     merge.add_argument(
         "--delete-plaintext",
         action="store_true",
-        help="delete the plaintext add file after successful merge",
+        help="unlink the plaintext add file after successful merge",
     )
     merge.set_defaults(func=_cmd_merge)
 
@@ -146,7 +146,10 @@ def _cmd_merge(args: argparse.Namespace) -> int:
     passphrase = _read_passphrase(args.passphrase_env)
     additions = {
         key: value
-        for key, value in dotenv_values(args.add_file).items()
+        for key, value in dotenv_values(
+            args.add_file,
+            interpolate=False,
+        ).items()
         if value is not None
     }
     env = _read_or_empty(args.src, passphrase)

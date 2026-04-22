@@ -20,6 +20,7 @@ import json
 import os
 import re
 import struct
+import tempfile
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from getpass import getpass
@@ -43,9 +44,12 @@ _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # KDF parameters are read from the encrypted file header before authentication
 # can complete. These caps prevent a malicious file from requesting excessive
 # memory or CPU during key derivation.
-_MAX_SCRYPT_N: Final = 2**20
-_MAX_SCRYPT_R: Final = 16
-_MAX_SCRYPT_P: Final = 4
+_MIN_SCRYPT_N: Final = 2**14
+_MAX_SCRYPT_N: Final = 2**16
+_MIN_SCRYPT_R: Final = 8
+_MAX_SCRYPT_R: Final = 8
+_MIN_SCRYPT_P: Final = 1
+_MAX_SCRYPT_P: Final = 2
 
 # Tracks names written by load_enc_env so unload_enc_env removes only values
 # injected by this package, rather than deleting unrelated process environment.
@@ -85,14 +89,16 @@ class ScryptParams:
         """
         if self.n < 2 or self.n & (self.n - 1):
             raise ValueError("scrypt n must be a power of two greater than 1.")
+        if self.n < _MIN_SCRYPT_N:
+            raise ValueError(f"scrypt n must be at least {_MIN_SCRYPT_N}.")
         if self.n > _MAX_SCRYPT_N:
             raise ValueError(f"scrypt n must be no greater than {_MAX_SCRYPT_N}.")
-        if self.r < 1:
-            raise ValueError("scrypt r must be at least 1.")
+        if self.r < _MIN_SCRYPT_R:
+            raise ValueError(f"scrypt r must be at least {_MIN_SCRYPT_R}.")
         if self.r > _MAX_SCRYPT_R:
             raise ValueError(f"scrypt r must be no greater than {_MAX_SCRYPT_R}.")
-        if self.p < 1:
-            raise ValueError("scrypt p must be at least 1.")
+        if self.p < _MIN_SCRYPT_P:
+            raise ValueError(f"scrypt p must be at least {_MIN_SCRYPT_P}.")
         if self.p > _MAX_SCRYPT_P:
             raise ValueError(f"scrypt p must be no greater than {_MAX_SCRYPT_P}.")
         if self.dklen != 32:
@@ -329,12 +335,24 @@ def load_enc_env(
 
     target_environ = os.environ if environ is None else environ
     env = read_encrypted_env(src, passphrase)
+    _validate_env_mapping(env)
 
     written: set[str] = set()
-    for key, value in env.items():
-        if override or key not in target_environ:
-            target_environ[key] = value
-            written.add(key)
+    previous_values: dict[str, str | None] = {}
+    try:
+        for key, value in env.items():
+            if override or key not in target_environ:
+                previous_values[key] = target_environ.get(key)
+                target_environ[key] = value
+                written.add(key)
+    except Exception:
+        for key in reversed(tuple(written)):
+            previous = previous_values[key]
+            if previous is None:
+                target_environ.pop(key, None)
+            else:
+                target_environ[key] = previous
+        raise
 
     _loaded_keys = written
     return env
@@ -496,16 +514,23 @@ def _parse_env(text: str) -> dict[str, str]:
     """Parse dotenv text, dropping entries without values."""
     return {
         key: value
-        for key, value in dotenv_values(stream=StringIO(text)).items()
+        for key, value in dotenv_values(
+            stream=StringIO(text),
+            interpolate=False,
+        ).items()
         if value is not None
     }
 
 
 def _validate_env_mapping(env: Mapping[str, str]) -> None:
     """Validate env names before rendering dotenv text."""
-    for key in env:
+    for key, value in env.items():
         if not _ENV_NAME.fullmatch(key):
             raise ValueError(f"Invalid environment variable name: {key!r}")
+        if "\x00" in key:
+            raise ValueError(f"Environment variable name contains NUL: {key!r}")
+        if "\x00" in value:
+            raise ValueError(f"Environment variable {key!r} contains NUL.")
 
 
 def _resolve_passphrase(
@@ -544,22 +569,56 @@ def _validate_passphrase(passphrase: str) -> None:
 
 
 def _write_private_file(path: str | os.PathLike[str], data: bytes) -> Path:
-    """Write bytes to a file with owner-only permissions where possible."""
+    """Atomically write bytes with owner-only permissions where possible."""
     target = Path(path)
     if target.parent != Path("."):
         target.parent.mkdir(parents=True, exist_ok=True)
 
-    # os.open allows setting the initial mode atomically on POSIX. chmod below
-    # also tightens permissions when replacing an existing file.
-    fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(data)
-
+    directory = target.parent if target.parent != Path("") else Path(".")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=directory,
+    )
+    tmp_path = Path(tmp_name)
     try:
-        os.chmod(target, 0o600)
-    except OSError:
-        pass
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
+
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(tmp_path, target)
+        try:
+            os.chmod(target, 0o600)
+        except OSError:
+            pass
+        _fsync_directory(directory)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
     return target
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Best-effort fsync for the containing directory after atomic replace."""
+    if os.name != "posix":
+        return
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _urlsafe_b64(data: bytes) -> str:
@@ -589,4 +648,3 @@ def _expect_int(value: object, name: str) -> int:
     if not isinstance(value, int):
         raise InvalidEncryptedFile(f"Invalid integer field in encrypted file: {name}.")
     return value
-

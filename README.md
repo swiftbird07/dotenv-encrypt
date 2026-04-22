@@ -69,6 +69,10 @@ dotenv-encrypt merge .env.add .env.enc
 dotenv-encrypt decrypt .env.enc -o .env.local
 ```
 
+`--delete-plaintext` removes the plaintext file after a successful operation by
+unlinking it. It is not secure erasure and does not remove copies from backups,
+snapshots, filesystem journals, SSD wear-leveling storage, or other locations.
+
 ## Security Notes
 
 - Encryption is AES-256-GCM with a fresh 96-bit nonce for every write.
@@ -76,6 +80,8 @@ dotenv-encrypt decrypt .env.enc -o .env.local
 - File metadata is authenticated with AES-GCM additional authenticated data.
 - Output files are written with `0600` permissions where the platform supports
   POSIX modes.
+- Encrypted files are written through an atomic same-directory replace to avoid
+  truncating an existing store on write failure.
 - Secret values are not printed by default. `show --values` should be used only
   when plaintext output is required.
 
@@ -122,6 +128,9 @@ sandbox or secret manager.
   private.
 - **Weak passphrases:** scrypt slows guessing, but it cannot save a short,
   reused, or leaked passphrase from offline brute force.
+- **Rollback to a valid prior file:** AES-GCM detects modification, but a
+  previously valid `.env.enc` can be restored unless an external deployment,
+  backup, or versioning process detects the rollback.
 
 ### Operational Guidance
 

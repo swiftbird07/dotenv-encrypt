@@ -42,6 +42,23 @@ def test_cli_encrypt_show_set_and_unset(
     assert read_encrypted_env(encrypted, PASSPHRASE) == {"BRAVO": "two"}
 
 
+def test_cli_merge_does_not_expand_ambient_environment(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    encrypted = tmp_path / ".env.enc"
+    additions = tmp_path / ".env.add"
+    additions.write_text("MERGED=${AMBIENT_FOR_TEST}\n", encoding="utf-8")
+    monkeypatch.setenv(PASSPHRASE_ENV, PASSPHRASE)
+    monkeypatch.setenv("AMBIENT_FOR_TEST", "ambient-value")
+
+    assert cli_main(["merge", str(additions), str(encrypted)]) == 0
+
+    assert read_encrypted_env(encrypted, PASSPHRASE) == {
+        "MERGED": "${AMBIENT_FOR_TEST}"
+    }
+
+
 def test_e2e_encrypt_delete_plaintext_and_load_env(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
