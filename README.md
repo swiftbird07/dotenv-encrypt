@@ -1,5 +1,12 @@
 # dotenv-encrypt
 
+[![PyPI version](https://img.shields.io/pypi/v/dotenv-encrypt.svg)](https://pypi.org/project/dotenv-encrypt/)
+[![PyPI status](https://img.shields.io/pypi/status/dotenv-encrypt.svg)](https://pypi.org/project/dotenv-encrypt/)
+[![Python versions](https://img.shields.io/pypi/pyversions/dotenv-encrypt.svg)](https://pypi.org/project/dotenv-encrypt/)
+[![Tests](https://github.com/swiftbird07/dotenv-encrypt/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/swiftbird07/dotenv-encrypt/actions/workflows/tests.yml)
+[![Publish](https://github.com/swiftbird07/dotenv-encrypt/actions/workflows/python-publish.yml/badge.svg)](https://github.com/swiftbird07/dotenv-encrypt/actions/workflows/python-publish.yml)
+[![License](https://img.shields.io/pypi/l/dotenv-encrypt.svg)](https://github.com/swiftbird07/dotenv-encrypt/blob/main/LICENSE)
+
 Encrypt, decrypt, edit, and load `.env` files from Python without committing
 plaintext secrets.
 
