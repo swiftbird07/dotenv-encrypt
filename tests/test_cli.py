@@ -90,7 +90,7 @@ def test_cli_argument_error_prints_full_subcommand_help(
     assert "KEY" in error
     assert "VALUE" in error
     assert "ENV_ENC_FILE" in error
-    assert "options:" in error
+    assert "options:" in error or "optional arguments:" in error
     assert "the following arguments are required: KEY, VALUE" in error
 
 
