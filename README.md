@@ -25,12 +25,16 @@ pytest
 ```python
 from dotenv_encrypt import load_enc_env, unload_enc_env
 
-load_enc_env(".env.enc", passphrase="strong passphrase")
+load_enc_env(".env.enc")
 
 # os.environ now contains the variables from .env.enc
 
 unload_enc_env()
 ```
+
+When no passphrase is supplied and `DOTENV_ENCRYPT_KEY` is unset,
+`dotenv-encrypt` prompts securely with `getpass`. This is the recommended local
+usage because the passphrase is not stored in source code.
 
 Read and write encrypted dotenv files directly:
 
@@ -40,11 +44,14 @@ from dotenv_encrypt import read_encrypted_env, write_encrypted_env
 write_encrypted_env(
     {"API_KEY": "secret", "DEBUG": "false"},
     ".env.enc",
-    passphrase="strong passphrase",
 )
 
-env = read_encrypted_env(".env.enc", passphrase="strong passphrase")
+env = read_encrypted_env(".env.enc")
 ```
+
+An explicit `passphrase=` argument is available for controlled integrations and
+tests. For automation, prefer a protected `DOTENV_ENCRYPT_KEY` environment
+variable over hard-coded source values.
 
 ## CLI Usage
 

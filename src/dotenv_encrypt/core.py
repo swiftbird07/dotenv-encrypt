@@ -1,4 +1,16 @@
-"""Core encryption and .env loading helpers for dotenv-encrypt."""
+"""Core encryption and .env loading helpers for dotenv-encrypt.
+
+The current encrypted file format is:
+
+```
+DENVENC1 || header_len_u16_be || header_json || nonce || ciphertext_and_tag
+```
+
+The JSON header contains non-secret metadata such as the format version, KDF
+parameters, and random salt. The exact encoded header bytes are passed to
+AES-GCM as additional authenticated data (AAD), so metadata changes are caught
+by authentication even though the metadata itself is not encrypted.
+"""
 
 from __future__ import annotations
 
@@ -32,10 +44,16 @@ _SALT_SIZE: Final = 16
 _AES_GCM_TAG_SIZE: Final = 16
 _LEGACY_PASSPHRASE_SALT: Final = b"C9A73747FDAC9945E2ADC3"
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# KDF parameters are read from the encrypted file header before authentication
+# can complete. These caps prevent a malicious file from requesting excessive
+# memory or CPU during key derivation.
 _MAX_SCRYPT_N: Final = 2**20
 _MAX_SCRYPT_R: Final = 16
 _MAX_SCRYPT_P: Final = 4
 
+# Tracks names written by load_enc_env so unload_enc_env removes only values
+# injected by this package, rather than deleting unrelated process environment.
 _loaded_keys: set[str] = set()
 
 
@@ -53,7 +71,11 @@ class DecryptionError(DotenvEncryptError):
 
 @dataclass(frozen=True)
 class ScryptParams:
-    """Parameters for passphrase-based key derivation."""
+    """Parameters for passphrase-based key derivation.
+
+    ``n``, ``r``, and ``p`` are the standard scrypt work-factor parameters.
+    ``dklen`` is fixed at 32 bytes because the package uses AES-256-GCM.
+    """
 
     n: int = 2**14
     r: int = 8
@@ -61,7 +83,11 @@ class ScryptParams:
     dklen: int = 32
 
     def validate(self) -> None:
-        """Validate parameters before handing them to OpenSSL."""
+        """Validate parameters before handing them to OpenSSL.
+
+        The upper bounds are deliberately part of validation because these
+        values may come from untrusted file metadata during decryption.
+        """
         if self.n < 2 or self.n & (self.n - 1):
             raise ValueError("scrypt n must be a power of two greater than 1.")
         if self.n > _MAX_SCRYPT_N:
@@ -78,13 +104,21 @@ class ScryptParams:
             raise ValueError("AES-256-GCM requires a 32-byte derived key.")
 
     def to_header(self) -> dict[str, int]:
-        """Serialize KDF parameters into encrypted file metadata."""
+        """Serialize KDF parameters into encrypted file metadata.
+
+        The returned values are not secret, but they are authenticated as part
+        of the encrypted file header.
+        """
         self.validate()
         return {"n": self.n, "r": self.r, "p": self.p, "dklen": self.dklen}
 
     @classmethod
     def from_header(cls, data: Mapping[str, object]) -> ScryptParams:
-        """Load KDF parameters from encrypted file metadata."""
+        """Load KDF parameters from encrypted file metadata.
+
+        A dedicated parser keeps untrusted JSON values as ``object`` until each
+        expected integer field has been type-checked.
+        """
         try:
             params = cls(
                 n=_expect_int(data["n"], "n"),
@@ -102,7 +136,12 @@ DEFAULT_SCRYPT_PARAMS: Final = ScryptParams()
 
 
 def resolve_env_path(path: str | os.PathLike[str]) -> Path:
-    """Resolve an env file path from the current directory or its parents."""
+    """Resolve an env file path from the current directory or its parents.
+
+    Relative paths are searched from the current working directory upward. This
+    supports common application layouts where code runs from a subdirectory but
+    the encrypted env file lives at the repository root.
+    """
     candidate = Path(path)
     if candidate.is_absolute():
         return candidate
@@ -134,6 +173,9 @@ def encrypt_bytes(
     header = _make_header(salt, kdf_params)
     prefix = _encode_header(header)
     key = _derive_key(passphrase, salt, kdf_params)
+
+    # Authenticate the serialized header as AAD so changes to KDF metadata,
+    # cipher name, salt, or version fail decryption instead of being trusted.
     ciphertext = AESGCM(key).encrypt(nonce, plaintext, prefix)
     return prefix + nonce + ciphertext
 
@@ -148,6 +190,9 @@ def decrypt_bytes(blob: bytes, passphrase: str) -> bytes:
 
     if blob.startswith(_MAGIC):
         return _decrypt_current_format(blob, passphrase)
+
+    # Absence of the magic prefix is treated as the original script's format for
+    # backward-compatible reads. New writes always use the versioned format.
     return _decrypt_legacy_format(blob, passphrase)
 
 
@@ -180,7 +225,11 @@ def encrypt_file(
     *,
     kdf_params: ScryptParams = DEFAULT_SCRYPT_PARAMS,
 ) -> Path:
-    """Encrypt a plaintext file to ``dst`` and return the destination path."""
+    """Encrypt a plaintext file to ``dst`` and return the destination path.
+
+    The source file is left untouched. The CLI handles optional deletion so the
+    library API does not surprise callers by removing plaintext input.
+    """
     secret = _resolve_passphrase(passphrase, prompt=True, confirm=True)
     plaintext = Path(src).read_bytes()
     encrypted = encrypt_bytes(plaintext, secret, kdf_params=kdf_params)
@@ -197,6 +246,8 @@ def decrypt_file(
     """Decrypt ``src`` to ``dst``.
 
     ``overwrite`` defaults to ``False`` because the destination is plaintext.
+    The plaintext file is still written with private permissions where the
+    platform supports them.
     """
     target = Path(dst)
     if target.exists() and not overwrite:
@@ -211,7 +262,11 @@ def read_encrypted_env(
     path: str | os.PathLike[str] = ".env.enc",
     passphrase: str | None = None,
 ) -> dict[str, str]:
-    """Read an encrypted ``.env`` file and return parsed key/value pairs."""
+    """Read an encrypted ``.env`` file and return parsed key/value pairs.
+
+    Parsing is delegated to ``python-dotenv`` so quoting and escaping match the
+    familiar dotenv format.
+    """
     secret = _resolve_passphrase(passphrase, prompt=True)
     plaintext = decrypt_text(resolve_env_path(path).read_bytes(), secret)
     return _parse_env(plaintext)
@@ -224,7 +279,11 @@ def write_encrypted_env(
     *,
     kdf_params: ScryptParams = DEFAULT_SCRYPT_PARAMS,
 ) -> Path:
-    """Serialize and encrypt environment variables to ``path``."""
+    """Serialize and encrypt environment variables to ``path``.
+
+    Keys are validated before rendering to avoid writing malformed dotenv lines
+    that could parse differently later.
+    """
     _validate_env_mapping(env)
     secret = _resolve_passphrase(passphrase, prompt=True, confirm=True)
     encrypted = encrypt_text(render_env(env), secret, kdf_params=kdf_params)
@@ -240,8 +299,43 @@ def load_enc_env(
 ) -> dict[str, str]:
     """Decrypt ``src`` and load variables into an environment mapping.
 
-    Returns the parsed variables. Only variables written by this call are later
-    removed by :func:`unload_enc_env`.
+    This is the main runtime API. By default, variables are injected into
+    ``os.environ`` so existing application code can read them with
+    ``os.getenv`` or ``os.environ``. Tests and integrations can pass a custom
+    mutable mapping through ``environ`` to avoid mutating the process-wide
+    environment.
+
+    Passphrase resolution is intentionally ordered for safer local use:
+
+    1. an explicit ``passphrase`` argument, when provided;
+    2. ``DOTENV_ENCRYPT_KEY`` or the legacy ``ENC_DOTENV_KEY`` environment
+       variable, when set;
+    3. an interactive ``getpass`` prompt.
+
+    ``override`` controls collision handling. When ``True`` (the default),
+    encrypted values replace existing environment values. When ``False``,
+    existing values are preserved and only missing keys are written.
+
+    Returns:
+        The complete set of variables parsed from the encrypted file,
+        including variables that were not written because ``override=False``.
+
+    Raises:
+        FileNotFoundError: If ``src`` cannot be found.
+        ValueError: If no passphrase is available or an empty passphrase is
+            supplied.
+        DecryptionError: If authentication fails because the passphrase is
+            wrong or the encrypted file was modified.
+        InvalidEncryptedFile: If the encrypted file is malformed or unsupported.
+
+    Security:
+        After loading, plaintext values live in the target environment mapping.
+        Code running in the same process can read them. Call
+        :func:`unload_enc_env` when the values are no longer needed by a
+        long-running process.
+
+    Only variables written by the most recent call are tracked for later
+    removal by :func:`unload_enc_env`.
     """
     global _loaded_keys
 
@@ -259,7 +353,24 @@ def load_enc_env(
 
 
 def unload_enc_env(*, environ: MutableMapping[str, str] | None = None) -> None:
-    """Remove variables injected by the last :func:`load_enc_env` call."""
+    """Remove variables injected by the last :func:`load_enc_env` call.
+
+    By default, variables are removed from ``os.environ``. Pass the same custom
+    mapping used with :func:`load_enc_env` through ``environ`` when loading into
+    a test mapping or another process-local store.
+
+    Only keys that were actually written by the most recent ``load_enc_env``
+    call are removed. Existing values preserved by ``override=False`` are left
+    alone, and keys removed by other code before this call are ignored.
+
+    This function resets the internal tracking set after cleanup, so repeated
+    calls are safe and become no-ops until another load occurs.
+
+    Security:
+        This removes the package's tracked environment entries from the target
+        mapping. It cannot erase copies already read by application code,
+        libraries, logs, crash dumps, child processes, or other runtime state.
+    """
     global _loaded_keys
 
     target_environ = os.environ if environ is None else environ
@@ -269,7 +380,11 @@ def unload_enc_env(*, environ: MutableMapping[str, str] | None = None) -> None:
 
 
 def render_env(env: Mapping[str, str]) -> str:
-    """Serialize a mapping in dotenv syntax with safely escaped values."""
+    """Serialize a mapping in dotenv syntax with safely escaped values.
+
+    Values are double-quoted and escaped so round trips through
+    ``python-dotenv`` preserve backslashes, quotes, and newlines.
+    """
     _validate_env_mapping(env)
     lines: list[str] = []
     for key, value in env.items():
@@ -284,6 +399,7 @@ def render_env(env: Mapping[str, str]) -> str:
 
 
 def _decrypt_current_format(blob: bytes, passphrase: str) -> bytes:
+    """Decrypt the versioned format written by current package releases."""
     try:
         header, header_end = _decode_header(blob)
     except InvalidEncryptedFile:
@@ -303,6 +419,9 @@ def _decrypt_current_format(blob: bytes, passphrase: str) -> bytes:
     if len(nonce) != _NONCE_SIZE or len(ciphertext) < _AES_GCM_TAG_SIZE:
         raise InvalidEncryptedFile("Encrypted file is truncated.")
 
+    # The authenticated data must be the exact bytes used during encryption.
+    # Re-serializing JSON would be unsafe because key order and whitespace could
+    # differ while representing the same object.
     aad = blob[:header_end]
     key = _derive_key(passphrase, salt, params)
     try:
@@ -314,6 +433,12 @@ def _decrypt_current_format(blob: bytes, passphrase: str) -> bytes:
 
 
 def _decrypt_legacy_format(blob: bytes, passphrase: str) -> bytes:
+    """Decrypt the original script's nonce-plus-ciphertext format.
+
+    Legacy files did not include a magic prefix, a random salt, or authenticated
+    metadata. Support is read-only so old files can be migrated by reading and
+    writing them again with the current format.
+    """
     if len(blob) < _NONCE_SIZE + _AES_GCM_TAG_SIZE:
         raise InvalidEncryptedFile("Encrypted file is too short.")
 
@@ -322,6 +447,8 @@ def _decrypt_legacy_format(blob: bytes, passphrase: str) -> bytes:
     keys = [_derive_key(passphrase, _LEGACY_PASSPHRASE_SALT, DEFAULT_SCRYPT_PARAMS)]
     direct_key = _maybe_urlsafe_b64_key(passphrase)
     if direct_key is not None:
+        # Some legacy users may have cached the already-derived base64 key from
+        # ENC_DOTENV_KEY. Accept it for reads, but never write this format.
         keys.append(direct_key)
 
     for key in keys:
@@ -335,6 +462,7 @@ def _decrypt_legacy_format(blob: bytes, passphrase: str) -> bytes:
 
 
 def _make_header(salt: bytes, params: ScryptParams) -> dict[str, object]:
+    """Build non-secret metadata for the versioned encrypted file header."""
     return {
         "version": 1,
         "cipher": "AES-256-GCM",
@@ -345,6 +473,7 @@ def _make_header(salt: bytes, params: ScryptParams) -> dict[str, object]:
 
 
 def _encode_header(header: Mapping[str, object]) -> bytes:
+    """Encode header metadata into the authenticated byte prefix."""
     header_bytes = json.dumps(
         header,
         sort_keys=True,
@@ -356,6 +485,11 @@ def _encode_header(header: Mapping[str, object]) -> bytes:
 
 
 def _decode_header(blob: bytes) -> tuple[dict[str, object], int]:
+    """Parse and validate the versioned file header.
+
+    The returned index points to the first nonce byte. Authentication is handled
+    later by AES-GCM once the key can be derived.
+    """
     if len(blob) < len(_MAGIC) + _HEADER_LEN:
         raise InvalidEncryptedFile("Encrypted file is too short.")
     if not blob.startswith(_MAGIC):
@@ -386,6 +520,7 @@ def _decode_header(blob: bytes) -> tuple[dict[str, object], int]:
 
 
 def _derive_key(passphrase: str, salt: bytes, params: ScryptParams) -> bytes:
+    """Derive a 32-byte AES key from a passphrase and salt."""
     _validate_passphrase(passphrase)
     params.validate()
     return hashlib.scrypt(
@@ -399,6 +534,7 @@ def _derive_key(passphrase: str, salt: bytes, params: ScryptParams) -> bytes:
 
 
 def _parse_env(text: str) -> dict[str, str]:
+    """Parse dotenv text, dropping entries without values."""
     return {
         key: value
         for key, value in dotenv_values(stream=StringIO(text)).items()
@@ -407,6 +543,7 @@ def _parse_env(text: str) -> dict[str, str]:
 
 
 def _validate_env_mapping(env: Mapping[str, str]) -> None:
+    """Validate env names before rendering dotenv text."""
     for key in env:
         if not _ENV_NAME.fullmatch(key):
             raise ValueError(f"Invalid environment variable name: {key!r}")
@@ -418,6 +555,7 @@ def _resolve_passphrase(
     prompt: bool,
     confirm: bool = False,
 ) -> str:
+    """Return an explicit, environment, or prompted passphrase."""
     if passphrase is None:
         passphrase = os.environ.get(PASSPHRASE_ENV) or os.environ.get(
             LEGACY_PASSPHRASE_ENV
@@ -433,6 +571,7 @@ def _resolve_passphrase(
 
 
 def _prompt_passphrase(*, confirm: bool) -> str:
+    """Read a passphrase without echoing it to the terminal."""
     first = getpass("dotenv-encrypt passphrase: ")
     if confirm:
         second = getpass("Confirm passphrase: ")
@@ -442,15 +581,19 @@ def _prompt_passphrase(*, confirm: bool) -> str:
 
 
 def _validate_passphrase(passphrase: str) -> None:
+    """Reject empty passphrases before key derivation."""
     if not passphrase:
         raise ValueError("Passphrase cannot be empty.")
 
 
 def _write_private_file(path: str | os.PathLike[str], data: bytes) -> Path:
+    """Write bytes to a file with owner-only permissions where possible."""
     target = Path(path)
     if target.parent != Path("."):
         target.parent.mkdir(parents=True, exist_ok=True)
 
+    # os.open allows setting the initial mode atomically on POSIX. chmod below
+    # also tightens permissions when replacing an existing file.
     fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as handle:
         handle.write(data)
@@ -463,10 +606,12 @@ def _write_private_file(path: str | os.PathLike[str], data: bytes) -> Path:
 
 
 def _urlsafe_b64(data: bytes) -> str:
+    """Encode binary metadata as URL-safe base64 text."""
     return base64.urlsafe_b64encode(data).decode("ascii")
 
 
 def _decode_b64(value: object, name: str) -> bytes:
+    """Decode a base64 metadata field from untrusted JSON."""
     if not isinstance(value, str):
         raise InvalidEncryptedFile(f"Missing encrypted file {name}.")
     try:
@@ -476,18 +621,21 @@ def _decode_b64(value: object, name: str) -> bytes:
 
 
 def _expect_mapping(value: object, name: str) -> Mapping[str, object]:
+    """Require a JSON metadata field to be an object."""
     if not isinstance(value, Mapping):
         raise InvalidEncryptedFile(f"Missing encrypted file {name}.")
     return cast(Mapping[str, object], value)
 
 
 def _expect_int(value: object, name: str) -> int:
+    """Require a JSON metadata field to be an integer."""
     if not isinstance(value, int):
         raise InvalidEncryptedFile(f"Invalid integer field in encrypted file: {name}.")
     return value
 
 
 def _maybe_urlsafe_b64_key(value: str) -> bytes | None:
+    """Return a 32-byte decoded key when a legacy direct key was supplied."""
     try:
         decoded = base64.urlsafe_b64decode(value.encode("ascii"))
     except (ValueError, UnicodeEncodeError):
