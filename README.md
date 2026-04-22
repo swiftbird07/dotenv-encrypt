@@ -60,14 +60,30 @@ arguments can leak through shell history and process listings. Set
 `DOTENV_ENCRYPT_KEY` for automation, or let the CLI prompt securely.
 
 ```bash
+dotenv-encrypt
+dotenv-encrypt help show
 dotenv-encrypt encrypt .env -o .env.enc
 dotenv-encrypt show .env.enc
-dotenv-encrypt show .env.enc --values
+dotenv-encrypt show .env.enc --full
 dotenv-encrypt set API_KEY "secret" .env.enc
 dotenv-encrypt unset API_KEY .env.enc
-dotenv-encrypt merge .env.add .env.enc
+dotenv-encrypt merge
+dotenv-encrypt merge .env .env.enc
 dotenv-encrypt decrypt .env.enc -o .env.local
+dotenv-encrypt decrypt --overwrite
 ```
+
+Running `dotenv-encrypt` without arguments prints the command overview.
+`dotenv-encrypt help <command>` prints help for one command.
+
+`encrypt` asks for confirmation before replacing an existing output file. Use
+`encrypt --force` for non-interactive replacement in scripts.
+
+`decrypt` refuses to replace existing plaintext output unless `--overwrite` or
+`--force` is supplied.
+
+`show` masks values by default in `abc...xyz` style. `show --full` prints full
+plaintext values.
 
 `--delete-plaintext` removes the plaintext file after a successful operation by
 unlinking it. It is not secure erasure and does not remove copies from backups,
@@ -82,7 +98,7 @@ snapshots, filesystem journals, SSD wear-leveling storage, or other locations.
   POSIX modes.
 - Encrypted files are written through an atomic same-directory replace to avoid
   truncating an existing store on write failure.
-- Secret values are not printed by default. `show --values` should be used only
+- Secret values are masked by default. `show --full` should be used only
   when plaintext output is required.
 
 ## Threat Model
@@ -121,7 +137,7 @@ sandbox or secret manager.
 - **Malicious code running in the same process:** dependencies, plugins, or app
   code can read `os.environ` after `load_enc_env()` has populated it.
 - **Shell, log, and history leaks:** decrypted values printed by an application,
-  `dotenv-encrypt show --values`, debug logs, traces, shell history, copied
+  `dotenv-encrypt show --full`, debug logs, traces, shell history, copied
   plaintext `.env` files, and CI output are outside the encryption boundary.
 - **Compromised hosts:** if an attacker controls the machine while secrets are
   being decrypted or used, encryption at rest cannot keep those runtime secrets
@@ -141,5 +157,5 @@ sandbox or secret manager.
 - `unload_enc_env()` should be called when a long-running process no longer
   needs the values. Decrypted values should not be copied into other long-lived
   globals.
-- Treat `show --values` and `decrypt` as sensitive operations. Plaintext output
+- Treat `show --full` and `decrypt` as sensitive operations. Plaintext output
   and plaintext files should be short-lived and handled like any other secret.
