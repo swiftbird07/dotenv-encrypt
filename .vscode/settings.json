@@ -2,5 +2,14 @@
   "python.analysis.typeCheckingMode": "strict",
   "python.analysis.diagnosticMode": "workspace",
   "python.analysis.include": ["src", "tests"],
-  "python.analysis.exclude": [".venv", "build", "dist"]
+  "python.analysis.exclude": [
+    ".venv",
+    "build",
+    "dist"
+  ],
+  "python.testing.pytestArgs": [
+    "tests"
+  ],
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true
 }

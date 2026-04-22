@@ -1,0 +1,43 @@
+name: Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["ubuntu-latest", "macos-latest", "windows-latest"]
+        python-version: ["3.9", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Check
+        shell: bash
+        run: |
+          python -m venv .venv
+          if [ -f .venv/bin/activate ]; then
+            source .venv/bin/activate
+          else
+            source .venv/Scripts/activate
+          fi
+          python -m pip install -e ".[dev]"
+          python -m ruff check .
+          pyright
+          python -m pytest -q

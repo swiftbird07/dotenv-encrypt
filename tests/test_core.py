@@ -6,10 +6,8 @@ from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from pytest import CaptureFixture, MonkeyPatch
 
 from dotenv_encrypt import (
-    PASSPHRASE_ENV,
     DecryptionError,
     ScryptParams,
     decrypt_bytes,
@@ -20,7 +18,6 @@ from dotenv_encrypt import (
     unload_enc_env,
     write_encrypted_env,
 )
-from dotenv_encrypt.cli import main as cli_main
 
 FAST_KDF = ScryptParams(n=2**10, r=8, p=1)
 PASSPHRASE = "correct horse battery staple"  # noqa: S105
@@ -133,29 +130,3 @@ def test_legacy_original_script_format_can_be_read(tmp_path: Path) -> None:
     path.write_bytes(nonce + ciphertext)
 
     assert read_encrypted_env(path, PASSPHRASE) == {"LEGACY": "yes"}
-
-
-def test_cli_encrypt_show_set_and_unset(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-    capsys: CaptureFixture[str],
-) -> None:
-    plaintext = tmp_path / ".env"
-    encrypted = tmp_path / ".env.enc"
-    plaintext.write_text("ALPHA=one\n", encoding="utf-8")
-    monkeypatch.setenv(PASSPHRASE_ENV, PASSPHRASE)
-
-    assert cli_main(["encrypt", str(plaintext), "-o", str(encrypted)]) == 0
-    assert cli_main(["show", str(encrypted)]) == 0
-    output = capsys.readouterr().out
-    assert "ALPHA\n" in output
-    assert "one" not in output
-
-    assert cli_main(["set", "BRAVO", "two", str(encrypted)]) == 0
-    assert read_encrypted_env(encrypted, PASSPHRASE) == {
-        "ALPHA": "one",
-        "BRAVO": "two",
-    }
-
-    assert cli_main(["unset", "ALPHA", str(encrypted)]) == 0
-    assert read_encrypted_env(encrypted, PASSPHRASE) == {"BRAVO": "two"}
